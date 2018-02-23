@@ -9,12 +9,13 @@ Steps to compile:
     mv RNNG-Dynet/rnng/CMakeLists.txt ./
     mv RNNG-Dynet/rnng/ ./
     cd ../
-    cmake -DEIGEN3_INCLUDE_DIR=/u/miguelba/tools/eigen/ -DENABLE_CPP_EXAMPLES=ON -DENABLE_BOOST=ON -DBOOST_ROOT=/opt/share/boost-1.57.0/
+    cmake -DEIGEN3_INCLUDE_DIR=eigen-path -DENABLE_CPP_EXAMPLES=ON -DENABLE_BOOST=ON -DBOOST_ROOT=boost-path
     make -j 20
     cd examples/  -- here is your compiled file
     cp -r rnng/*.py ./
+    Download and compile EVALB (http://nlp.cs.nyu.edu/evalb/) and put it in the examples/ directory.
 
-Download and compile EVALB (http://nlp.cs.nyu.edu/evalb/) and put it in the examples/ directory.
+
 
 Once this is done, just follow the training steps here: https://github.com/clab/rnng (where --cnn-mem should be --dynet-mem now.)
 
