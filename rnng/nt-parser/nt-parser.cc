@@ -12,8 +12,6 @@
 #include <unistd.h>
 #include <signal.h>
 
-#include <boost/archive/text_oarchive.hpp>
-#include <boost/archive/text_iarchive.hpp>
 #include <boost/program_options.hpp>
 
 #include "dynet/training.h"
@@ -228,15 +226,19 @@ Expression log_prob_parser(ComputationGraph* hg,
                      double *right,
                      bool is_evaluation,
                      bool sample = false) {
+    std::cerr<<"sent size:"<<sent.size()<<"\n";
+
     vector<unsigned> results;
     const bool build_training_graph = correct_actions.size() > 0;
     bool apply_dropout = (DROPOUT && !is_evaluation);
-    stack_lstm.new_graph(*hg);
-    action_lstm.new_graph(*hg);
-    const_lstm_fwd.new_graph(*hg);
-    const_lstm_rev.new_graph(*hg);
+    if (!build_training_graph) {
+       stack_lstm.new_graph(*hg);
+       action_lstm.new_graph(*hg);
+       const_lstm_fwd.new_graph(*hg);
+       const_lstm_rev.new_graph(*hg);
+       buffer_lstm.new_graph(*hg);
+    }
     stack_lstm.start_new_sequence();
-    buffer_lstm.new_graph(*hg);
     buffer_lstm.start_new_sequence();
     action_lstm.start_new_sequence();
     if (apply_dropout) {
@@ -352,7 +354,8 @@ Expression log_prob_parser(ComputationGraph* hg,
       Expression r_t = affine_transform({abias, p2a, nlp_t});
       if (sample && ALPHA != 1.0f) r_t = r_t * ALPHA;
       // adist = log_softmax(r_t, current_valid_actions)
-      Expression adiste = log_softmax(r_t, current_valid_actions);
+      //Expression adiste = log_softmax(r_t, current_valid_actions);
+      Expression adiste = log_softmax(r_t);
       vector<float> adist = as_vector(hg->incremental_forward(adiste));
       double best_score = adist[current_valid_actions[0]];
       unsigned model_action = current_valid_actions[0];
@@ -871,7 +874,7 @@ int main(int argc, char** argv) {
   cerr << "COMMAND LINE:"; 
   for (unsigned i = 0; i < static_cast<unsigned>(argc); ++i) cerr << ' ' << argv[i];
   cerr << endl;
-  unsigned status_every_i_iterations = 100;
+  unsigned status_every_i_iterations = 12;
 
   po::variables_map conf;
   InitCommandLine(argc, argv, &conf);
@@ -1004,31 +1007,66 @@ int main(int argc, char** argv) {
     while(!requested_stop) {
       ++iter;
       auto time_start = chrono::system_clock::now();
+      vector<Expression> losses;
+      std::cerr<<"Active graphs at the beginning of the loop:"<<get_number_of_active_graphs()<<"\n";
+      ComputationGraph hg;
+      parser.stack_lstm.new_graph(hg);
+      parser.action_lstm.new_graph(hg);
+      parser.const_lstm_fwd.new_graph(hg);
+      parser.const_lstm_rev.new_graph(hg);
+      parser.buffer_lstm.new_graph(hg);
       for (unsigned sii = 0; sii < status_every_i_iterations; ++sii) {
            if (si == corpus.sents.size()) {
              si = 0;
              if (first) { first = false; }// else { sgd.update_epoch(); }
              cerr << "**SHUFFLE\n";
              random_shuffle(order.begin(), order.end());
-           }
+              
+	     int beginInd = 0;
+	     int endInd = status_every_i_iterations * 10;
+	     while(endInd < order.size()) {
+	          auto bIter = order.begin() + beginInd;
+		  auto eIter = order.begin() + endInd;
+		  sort(bIter, eIter,[&](const unsigned& a, const unsigned& b) {
+			return corpus.sents[a].size() > corpus.sents[b].size();
+		});
+		beginInd = endInd;
+		endInd += (status_every_i_iterations * 10);
+	      }
+
+
+
+	   }
            tot_seen += 1;
            auto& sentence = corpus.sents[order[si]];
 	   const vector<int>& actions=corpus.actions[order[si]];
-           ComputationGraph hg;
+           //ComputationGraph hg;
 	   vector<unsigned> pred;
            Expression loss=parser.log_prob_parser(&hg,pred,sentence,actions,&right,false);
-           double lp = as_scalar(hg.incremental_forward(loss));
-           if (lp < 0) {
-             cerr << "Log prob < 0 on sentence " << order[si] << ": lp=" << lp << endl;
-             assert(lp >= 0.0);
-           }
-           hg.backward(loss);
-           sgd.update();
-           llh += lp;
+	   losses.push_back(loss);
+           //double lp = as_scalar(hg.incremental_forward(loss));
+           //if (lp < 0) {
+           //  cerr << "Log prob < 0 on sentence " << order[si] << ": lp=" << lp << endl;
+           //  assert(lp >= 0.0);
+           //}
+           //hg.backward(loss);
+           //sgd.update();
+           //llh += lp;
            ++si;
            trs += actions.size();
            words += sentence.size();
       }
+      Expression suml=sum(losses);
+      double lp = as_scalar(hg.incremental_forward(suml));
+      if (lp < 0) {
+         cerr << "Log prob < 0 on sentence " << order[si] << ": lp=" << lp << endl;
+         assert(lp >= 0.0);
+      }
+      hg.backward(suml);
+      std::cerr<<get_number_of_active_graphs()<<"\n";
+      
+      sgd.update();
+      llh += lp;
       sgd.status();
       auto time_now = chrono::system_clock::now();
       auto dur = chrono::duration_cast<chrono::milliseconds>(time_now - time_start);
@@ -1039,7 +1077,7 @@ int main(int argc, char** argv) {
 
       static int logc = 0;
       ++logc;
-      if (logc % 25 == 1) { // report on dev set
+      if (logc % 2 == 1 && logc!=1) { // report on dev set
         unsigned dev_size = dev_corpus.size();
         double llh = 0;
         double trs = 0;
@@ -1050,19 +1088,38 @@ int main(int argc, char** argv) {
         const string pfx = os.str();
         ofstream out(pfx.c_str());
         auto t_start = chrono::high_resolution_clock::now();
+	std::cerr<<"Creating new graph for dev ppl"<<get_number_of_active_graphs()<<"\n";
+	ComputationGraph hg;
+        /*parser.stack_lstm.new_graph(hg);
+        parser.action_lstm.new_graph(hg);
+        parser.const_lstm_fwd.new_graph(hg);
+        parser.const_lstm_rev.new_graph(hg);
+        parser.buffer_lstm.new_graph(hg);*/
+	vector<Expression> losses;
         for (unsigned sii = 0; sii < dev_size; ++sii) {
            const auto& sentence=dev_corpus.sents[sii];
 	   const vector<int>& actions=dev_corpus.actions[sii];
            dwords += sentence.size();
-           {  ComputationGraph hg;
+           {  
 	      vector<unsigned> pred;
               Expression loss=parser.log_prob_parser(&hg,pred,sentence,actions,&right,true);
-              double lp = as_scalar(hg.incremental_forward(loss));
-              llh += lp;
+	      losses.push_back(loss);
+              //double lp = as_scalar(hg.incremental_forward(loss));
+              //llh += lp;
            }
-           ComputationGraph hg;
+	}
+	std::cerr<<"after eval"<<"\n";   
+	double lp = as_scalar(hg.incremental_forward(sum(losses)));
+	llh += lp;
+        for (unsigned sii = 0; sii < dev_size; ++sii) {
+           const auto& sentence=dev_corpus.sents[sii];
+           const vector<int>& actions=dev_corpus.actions[sii];
+           dwords += sentence.size();
+           {
+    
+	   ComputationGraph cg;
 	   vector<unsigned> pred;
-           parser.log_prob_parser(&hg,pred,sentence,vector<int>(),&right,true);
+           parser.log_prob_parser(&cg,pred,sentence,vector<int>(),&right,true);
            int ti = 0;
            for (auto a : pred) {
              if (adict.convert(a)[0] == 'N') {
@@ -1081,7 +1138,8 @@ int main(int argc, char** argv) {
              } else out << ") ";
            }
            out << endl;
-           double lp = 0;
+           //double lp = 0;
+           }
            trs += actions.size();
         }
         auto t_end = chrono::high_resolution_clock::now();
@@ -1142,6 +1200,9 @@ int main(int argc, char** argv) {
           }
         }
       }
+	
+     std::cerr<<"Active grpahs at the end of loop:"<<get_number_of_active_graphs()<<"\n";
+
     }
   } // should do training?
   if (test_corpus.size() > 0) { // do test evaluation
