@@ -226,7 +226,7 @@ Expression log_prob_parser(ComputationGraph* hg,
                      double *right,
                      bool is_evaluation,
                      bool sample = false) {
-    std::cerr<<"sent size:"<<sent.size()<<"\n";
+    //std::cerr<<"sent size:"<<sent.size()<<"\n";
 
     vector<unsigned> results;
     const bool build_training_graph = correct_actions.size() > 0;
@@ -355,6 +355,12 @@ Expression log_prob_parser(ComputationGraph* hg,
       if (sample && ALPHA != 1.0f) r_t = r_t * ALPHA;
       // adist = log_softmax(r_t, current_valid_actions)
       //Expression adiste = log_softmax(r_t, current_valid_actions);
+      unsigned action= current_valid_actions[0];
+      unsigned model_action = current_valid_actions[0];
+
+      Expression adiste = log_softmax(r_t);
+
+      if (!build_training_graph) {
       Expression adiste = log_softmax(r_t);
       vector<float> adist = as_vector(hg->incremental_forward(adiste));
       double best_score = adist[current_valid_actions[0]];
@@ -374,24 +380,26 @@ Expression log_prob_parser(ComputationGraph* hg,
           if (adist[current_valid_actions[i]] > best_score) {
             best_score = adist[current_valid_actions[i]];
             model_action = current_valid_actions[i];
+	    action = model_action;
           }
         }
       }
-      unsigned action = model_action;
-      if (build_training_graph) {  // if we have reference actions (for training) use the reference action
+      }
+      else {  // if we have reference actions (for training) use the reference action
         if (action_count >= correct_actions.size()) {
           cerr << "Correct action list exhausted, but not in final parser state.\n";
           abort();
         }
         action = correct_actions[action_count];
+
+	log_probs.push_back(-pickneglogsoftmax(adiste,action));
+
         if (model_action == action) { (*right)++; }
-      } else {
-        //cerr << "Chosen action: " << adict.convert(action) << endl;
       }
       //cerr << "prob ="; for (unsigned i = 0; i < adist.size(); ++i) { cerr << ' ' << adict.convert(i) << ':' << adist[i]; }
       //cerr << endl;
       ++action_count;
-      log_probs.push_back(pick(adiste, action));
+      //log_probs.push_back(pick(adiste, action));
       results.push_back(action);
 
       // add current action to action LSTM
@@ -874,7 +882,7 @@ int main(int argc, char** argv) {
   cerr << "COMMAND LINE:"; 
   for (unsigned i = 0; i < static_cast<unsigned>(argc); ++i) cerr << ' ' << argv[i];
   cerr << endl;
-  unsigned status_every_i_iterations = 12;
+  unsigned status_every_i_iterations = 10;
 
   po::variables_map conf;
   InitCommandLine(argc, argv, &conf);
