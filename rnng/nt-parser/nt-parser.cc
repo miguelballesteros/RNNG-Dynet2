@@ -231,13 +231,14 @@ Expression log_prob_parser(ComputationGraph* hg,
     vector<unsigned> results;
     const bool build_training_graph = correct_actions.size() > 0;
     bool apply_dropout = (DROPOUT && !is_evaluation);
-    if (!build_training_graph) {
+    /*if (!build_training_graph) {
        stack_lstm.new_graph(*hg);
        action_lstm.new_graph(*hg);
        const_lstm_fwd.new_graph(*hg);
        const_lstm_rev.new_graph(*hg);
        buffer_lstm.new_graph(*hg);
-    }
+    }*/
+
     stack_lstm.start_new_sequence();
     buffer_lstm.start_new_sequence();
     action_lstm.start_new_sequence();
@@ -514,9 +515,11 @@ Expression log_prob_parser(ComputationGraph* hg,
     assert(stacki.size() == 2);
     assert(buffer.size() == 1); // guard symbol
     assert(bufferi.size() == 1);
-    Expression tot_neglogprob = -sum(log_probs);
-    assert(tot_neglogprob.pg != nullptr);
     output=results;
+    Expression empty;
+    if (!build_training_graph) return empty;
+    Expression tot_neglogprob = -sum(log_probs); 
+    assert(tot_neglogprob.pg != nullptr);
     return tot_neglogprob;
   }
 
@@ -882,7 +885,7 @@ int main(int argc, char** argv) {
   cerr << "COMMAND LINE:"; 
   for (unsigned i = 0; i < static_cast<unsigned>(argc); ++i) cerr << ' ' << argv[i];
   cerr << endl;
-  unsigned status_every_i_iterations = 10;
+  unsigned status_every_i_iterations = 100;
 
   po::variables_map conf;
   InitCommandLine(argc, argv, &conf);
@@ -1016,7 +1019,6 @@ int main(int argc, char** argv) {
       ++iter;
       auto time_start = chrono::system_clock::now();
       vector<Expression> losses;
-      std::cerr<<"Active graphs at the beginning of the loop:"<<get_number_of_active_graphs()<<"\n";
       ComputationGraph hg;
       parser.stack_lstm.new_graph(hg);
       parser.action_lstm.new_graph(hg);
@@ -1071,7 +1073,6 @@ int main(int argc, char** argv) {
          assert(lp >= 0.0);
       }
       hg.backward(suml);
-      std::cerr<<get_number_of_active_graphs()<<"\n";
       
       sgd.update();
       llh += lp;
@@ -1096,28 +1097,34 @@ int main(int argc, char** argv) {
         const string pfx = os.str();
         ofstream out(pfx.c_str());
         auto t_start = chrono::high_resolution_clock::now();
-	std::cerr<<"Creating new graph for dev ppl"<<get_number_of_active_graphs()<<"\n";
-	ComputationGraph hg;
-        /*parser.stack_lstm.new_graph(hg);
+	//ComputationGraph hg;
+	hg.clear();
+        parser.stack_lstm.new_graph(hg);
         parser.action_lstm.new_graph(hg);
         parser.const_lstm_fwd.new_graph(hg);
         parser.const_lstm_rev.new_graph(hg);
-        parser.buffer_lstm.new_graph(hg);*/
+        parser.buffer_lstm.new_graph(hg);
 	vector<Expression> losses;
         for (unsigned sii = 0; sii < dev_size; ++sii) {
            const auto& sentence=dev_corpus.sents[sii];
 	   const vector<int>& actions=dev_corpus.actions[sii];
            dwords += sentence.size();
-           {  
+           { 
+	      hg.clear();
+              //ComputationGraph hg;
+	      parser.stack_lstm.new_graph(hg);
+              parser.action_lstm.new_graph(hg);
+              parser.const_lstm_fwd.new_graph(hg);
+              parser.const_lstm_rev.new_graph(hg);
+              parser.buffer_lstm.new_graph(hg); 
 	      vector<unsigned> pred;
               Expression loss=parser.log_prob_parser(&hg,pred,sentence,actions,&right,true);
-	      losses.push_back(loss);
-              //double lp = as_scalar(hg.incremental_forward(loss));
-              //llh += lp;
+	      //losses.push_back(loss);
+              double lp = as_scalar(hg.incremental_forward(loss));
+              llh += lp;
            }
 	}
-	std::cerr<<"after eval"<<"\n";   
-	double lp = as_scalar(hg.incremental_forward(sum(losses)));
+	//double lp = as_scalar(hg.incremental_forward(sum(losses)));
 	llh += lp;
         for (unsigned sii = 0; sii < dev_size; ++sii) {
            const auto& sentence=dev_corpus.sents[sii];
@@ -1125,9 +1132,15 @@ int main(int argc, char** argv) {
            dwords += sentence.size();
            {
     
-	   ComputationGraph cg;
+	   //ComputationGraph cg;
+	   hg.clear();
+	   parser.stack_lstm.new_graph(hg);
+           parser.action_lstm.new_graph(hg);
+           parser.const_lstm_fwd.new_graph(hg);
+           parser.const_lstm_rev.new_graph(hg);
+           parser.buffer_lstm.new_graph(hg);
 	   vector<unsigned> pred;
-           parser.log_prob_parser(&cg,pred,sentence,vector<int>(),&right,true);
+           parser.log_prob_parser(&hg,pred,sentence,vector<int>(),&right,true);
            int ti = 0;
            for (auto a : pred) {
              if (adict.convert(a)[0] == 'N') {
@@ -1208,9 +1221,6 @@ int main(int argc, char** argv) {
           }
         }
       }
-	
-     std::cerr<<"Active grpahs at the end of loop:"<<get_number_of_active_graphs()<<"\n";
-
     }
   } // should do training?
   if (test_corpus.size() > 0) { // do test evaluation
